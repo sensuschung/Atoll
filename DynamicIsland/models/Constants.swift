@@ -1503,6 +1503,8 @@ extension Defaults.Keys {
     static let enableMinimalisticUI = Key<Bool>("enableMinimalisticUI", default: false)
     
     // MARK: Lyrics Feature
+    static let closedLyricScrollSpeed = Key<Double>("closedLyricScrollSpeed", default: 30)
+    static let closedLyricPauseDuration = Key<Double>("closedLyricPauseDuration", default: 1)
     static let enableLyrics = Key<Bool>("enableLyrics", default: false)
 
     /// Whether the sung line is swept or simply lit.

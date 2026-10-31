@@ -431,6 +431,18 @@ struct ContentView: View {
         return screen.safeAreaInsets.top <= 0
     }
 
+    /// Reserve the camera housing above the closed music row on notch displays.
+    private var closedMusicLyricTopInset: CGFloat {
+        guard enableLyrics, vm.notchState == .closed,
+              !musicManager.currentLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let screen = NSScreen.screens.first(where: { $0.localizedName == currentScreenName }),
+              screen.safeAreaInsets.top > 0 else { return 0 }
+        let inlinePeek = coordinator.expandingView.show && Defaults[.enableSneakPeek]
+            && Defaults[.sneakPeekStyles] == .inline
+            && (coordinator.expandingView.type == .music || coordinator.expandingView.type == .timer)
+        return inlinePeek ? 0 : screen.safeAreaInsets.top
+    }
+
     /// Whether the global sneak peek is visible on this specific screen.
     private var isSneakPeekVisibleOnCurrentScreen: Bool {
         guard coordinator.sneakPeek.show else { return false }
@@ -843,16 +855,10 @@ struct ContentView: View {
                 Button("Settings") {
                     SettingsWindowController.shared.showWindow()
                 }
-//                Button("Edit") { // Doesnt work....
-//                    let dn = DynamicNotch(content: EditPanelView())
-//                    dn.toggle()
-//                }
-//                #if DEBUG
-//                .disabled(false)
-//                #else
-//                .disabled(true)
-//                #endif
-//                .keyboardShortcut("E", modifiers: .command)
+                Divider()
+                Button("Quit") {
+                    NSApp.terminate(nil)
+                }
             }
     }
 
@@ -1448,7 +1454,7 @@ struct ContentView: View {
                 .frame(width: effectiveCenterWidth, height: notchContentHeight)
                 .overlay(
                     HStack(alignment: .top) {
-                        if(coordinator.expandingView.show && coordinator.expandingView.type == .music) {
+                        if inlineSneakPeekActive && coordinator.expandingView.type == .music {
                             MusicTitleMarqueeView(
                                 text: musicManager.songTitle,
                                 isExplicit: musicManager.isCurrentTrackExplicit,
@@ -1466,7 +1472,7 @@ struct ContentView: View {
                                 .foregroundStyle(Defaults[.coloredSpectrogram] ? Color(nsColor: musicManager.avgColor) : Color.gray)
                                 .padding(.trailing, 8)
                                 .opacity((coordinator.expandingView.show && coordinator.expandingView.type == .music && Defaults[.enableSneakPeek] && Defaults[.sneakPeekStyles] == .inline) ? 1 : 0)
-                        } else if(coordinator.expandingView.show && coordinator.expandingView.type == .timer) {
+                        } else if inlineSneakPeekActive && coordinator.expandingView.type == .timer {
                             MarqueeText(
                                 .constant(timerManager.timerName),
                                 textColor: timerManager.timerColor,
@@ -1482,6 +1488,10 @@ struct ContentView: View {
                                 .foregroundStyle(timerManager.timerColor)
                                 .padding(.trailing, 8)
                                 .opacity((coordinator.expandingView.show && coordinator.expandingView.type == .timer && Defaults[.enableSneakPeek] && Defaults[.sneakPeekStyles] == .inline) ? 1 : 0)
+                        } else if enableLyrics && !musicManager.currentLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            ClosedMusicLyricView(text: musicManager.currentLyrics.trimmingCharacters(in: .whitespacesAndNewlines))
+                                .frame(width: max(0, effectiveCenterWidth - 16), height: notchContentHeight)
+                                .padding(.horizontal, 8)
                         } else if Defaults[.showSongMetadataInClosedNotch] && isNonNotchScreen && !musicManager.songTitle.isEmpty {
                             MarqueeText(
                                 .constant("\(musicManager.songTitle) • \(musicManager.artistName)"),
@@ -1514,6 +1524,7 @@ struct ContentView: View {
         }
         .frame(width: notchWidth, height: notchContentHeight)
         .frame(height: outerHeight, alignment: .center)
+        .padding(.top, closedMusicLyricTopInset)
         .animation(.smooth(duration: 0.25), value: secondary?.id)
     }
 
@@ -2415,7 +2426,7 @@ struct ContentView: View {
             closedNotchSize: vm.closedNotchSize,
             effectiveClosedNotchHeight: vm.effectiveClosedNotchHeight
         )
-        let height = max(closedHeight, recordingSize?.height ?? 0) + 6
+        let height = max(closedHeight + closedMusicLyricTopInset, recordingSize?.height ?? 0) + 6
             + PinnedLyricsView.reservedHeight(isEligible: pinnedLyricsVisible,
                 availability: musicManager.lyricsAvailability, context: pinnedLyricContext)
         let width = max(closedWidth, recordingSize?.width ?? 0) + 24

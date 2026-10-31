@@ -3176,6 +3176,8 @@ struct Media: View {
     @Default(.showCalendar) private var showCalendar
     @Default(.enableLyrics) private var enableLyrics
     @Default(.pinLyricsWhenClosed) private var pinLyricsWhenClosed
+    @Default(.closedLyricScrollSpeed) private var closedLyricScrollSpeed
+    @Default(.closedLyricPauseDuration) private var closedLyricPauseDuration
     @Default(.pinnedLyricContext) private var pinnedLyricContext
     @Default(.lyricHighlightStyle) private var lyricHighlightStyle
     @Default(.lyricsPanelWidth) private var lyricsPanelWidth
@@ -3380,6 +3382,23 @@ struct Media: View {
                 .settingsHighlight(id: highlightID("Show lyrics"))
 
                 if enableLyrics && !enableMinimalisticUI && showStandardMediaControls {
+                    Slider(value: $closedLyricScrollSpeed, in: 10...100, step: 5) {
+                        HStack {
+                            Text("Closed lyrics scroll speed")
+                            Spacer()
+                            Text("\(Int(closedLyricScrollSpeed)) pt/s")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Slider(value: $closedLyricPauseDuration, in: 0...5, step: 0.5) {
+                        HStack {
+                            Text("Closed lyrics end pause")
+                            Spacer()
+                            Text("\(closedLyricPauseDuration, specifier: "%.1f") s")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
                     // Caption inside the row rather than after it: a Form gives
                     // every top-level view its own row and a divider, so the
                     // explanation was being ruled off from the control it

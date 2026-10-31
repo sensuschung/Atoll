@@ -21,6 +21,7 @@
  */
 
 import SwiftUI
+import Defaults
 
 struct SizePreferenceKey: PreferenceKey {
     static var defaultValue: CGSize = .zero
@@ -307,5 +308,54 @@ struct MusicTitleMarqueeView: View {
             }
         }
         .frame(width: frameWidth, alignment: alignment)
+    }
+}
+
+/// Scrolls from the beginning to the end, pauses, then restarts.
+struct ClosedMusicLyricView: View {
+    let text: String
+    @State private var startedAt = Date()
+    @State private var renderedWidth: CGFloat = 0
+    @Default(.closedLyricScrollSpeed) private var scrollSpeed
+    @Default(.closedLyricPauseDuration) private var pauseDuration
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var singleLineText: String {
+        text.split(whereSeparator: { $0.isNewline }).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let overflow = max(0, renderedWidth - geometry.size.width)
+            TimelineView(.animation(paused: overflow == 0 || reduceMotion)) { timeline in
+                Text(singleLineText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.width
+                    } action: { width in
+                        renderedWidth = width
+                        startedAt = Date()
+                    }
+                    .offset(x: scrollOffset(overflow: overflow, date: timeline.date))
+                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: overflow > 0 ? .leading : .center)
+            }
+            .clipped()
+        }
+        .onChange(of: singleLineText) { _, _ in startedAt = Date() }
+        .onChange(of: scrollSpeed) { _, _ in startedAt = Date() }
+        .onChange(of: pauseDuration) { _, _ in startedAt = Date() }
+        .onAppear { startedAt = Date() }
+        .accessibilityLabel(singleLineText)
+    }
+
+    private func scrollOffset(overflow: CGFloat, date: Date) -> CGFloat {
+        guard overflow > 0, !reduceMotion else { return 0 }
+        let pause = max(0, pauseDuration)
+        let travel = Double(overflow) / max(1, scrollSpeed)
+        let phase = max(0, date.timeIntervalSince(startedAt)).truncatingRemainder(dividingBy: travel + pause)
+        return -overflow * CGFloat(min(1, phase / travel))
     }
 }
