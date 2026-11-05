@@ -431,18 +431,6 @@ struct ContentView: View {
         return screen.safeAreaInsets.top <= 0
     }
 
-    /// Reserve the camera housing above the closed music row on notch displays.
-    private var closedMusicLyricTopInset: CGFloat {
-        guard enableLyrics, vm.notchState == .closed,
-              !musicManager.currentLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let screen = NSScreen.screens.first(where: { $0.localizedName == currentScreenName }),
-              screen.safeAreaInsets.top > 0 else { return 0 }
-        let inlinePeek = coordinator.expandingView.show && Defaults[.enableSneakPeek]
-            && Defaults[.sneakPeekStyles] == .inline
-            && (coordinator.expandingView.type == .music || coordinator.expandingView.type == .timer)
-        return inlinePeek ? 0 : screen.safeAreaInsets.top
-    }
-
     /// Whether the global sneak peek is visible on this specific screen.
     private var isSneakPeekVisibleOnCurrentScreen: Bool {
         guard coordinator.sneakPeek.show else { return false }
@@ -528,9 +516,9 @@ struct ContentView: View {
     private var hasActiveMusicSnapshotForClosedPairing: Bool {
         if musicManager.isPlaying { return true }
 
-        let hasMusicMetadata = !musicManager.songTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !musicManager.artistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return !musicManager.isPlayerIdle && hasMusicMetadata
+        // Keep the paused music row while its lyrics are pinned, including
+        // after the usual idle timeout. Placeholder metadata is not a session.
+        return musicManager.hasActiveSession && (!musicManager.isPlayerIdle || (enableLyrics && pinLyricsWhenClosed))
     }
 
     private var recordingLiveActivityVisibleOnClosedNotch: Bool {
@@ -1041,8 +1029,19 @@ struct ContentView: View {
     /// Zero unless something is actually being covered: no live activity, an
     /// open notch, no accessibility permission, or menus that end before the
     /// content begins all leave the notch centred where it belongs.
+    private var closedHUDRequiresCentering: Bool {
+        guard vm.notchState == .closed else { return false }
+        if isConnectivityHUDVisible { return true }
+        guard isSneakPeekVisibleOnCurrentScreen else { return false }
+        switch coordinator.sneakPeek.type {
+        case .volume, .brightness, .backlight, .mic: return true
+        default: return false
+        }
+    }
+
     private var menuBarClearanceOffset: CGFloat {
-        guard vm.notchState == .closed,
+        guard !closedHUDRequiresCentering,
+              vm.notchState == .closed,
               !vm.hideOnClosed,
               closedContentWidth > 0,
               let menusRightEdge = menuBarLayout.appMenusRightEdge,
@@ -1075,12 +1074,7 @@ struct ContentView: View {
                       .padding(.top, 40)
                       Spacer()
                   } else {
-                        let hasMusicMetadata = !musicManager.songTitle.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty
-                            || !musicManager.artistName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty
-                      let hasActiveMusicSnapshot: Bool = {
-                          if musicManager.isPlaying { return true }
-                          return !musicManager.isPlayerIdle && hasMusicMetadata
-                      }()
+                      let hasActiveMusicSnapshot = hasActiveMusicSnapshotForClosedPairing
                       let musicPairingEligible = closedMusicPairingEligible(hasActiveMusicSnapshot: hasActiveMusicSnapshot)
                       let musicSecondary = resolveMusicSecondaryLiveActivity(isMusicPairingEligible: musicPairingEligible)
                       let extensionSecondaryPayloadID = extensionSecondaryPayloadID(for: musicSecondary)
@@ -1278,14 +1272,12 @@ struct ContentView: View {
                           .onChange(of: geo.size.width) { _, width in closedContentWidth = width }
                   }
               }
-              .pinnedLyrics(isVisible: pinnedLyricsVisible,
-                  isContentHidden: isSneakPeekVisibleOnCurrentScreen || isConnectivityHUDVisible)
-              // A connectivity HUD must remain centred on the physical notch:
-              // its middle transparent lane is what keeps both wings visible.
-              // Menu-bar clearance would shift that lane underneath the camera
-              // housing and clip one of the two content areas.
-              .offset(x: isConnectivityHUDVisible ? 0 : menuBarClearanceOffset)
-              .animation(.smooth(duration: 0.25), value: menuBarClearanceOffset)
+              .pinnedLyrics(isVisible: pinnedLyricsVisible)
+              // System HUDs reserve a centre lane for the physical camera housing.
+              // Keep that lane centred from the first frame, including while the
+              // measured width changes from the preceding music/lyrics surface.
+              .offset(x: menuBarClearanceOffset)
+              .animation(closedHUDRequiresCentering ? nil : .smooth(duration: 0.25), value: menuBarClearanceOffset)
               .zIndex(2)
               
               ZStack {
@@ -1488,10 +1480,6 @@ struct ContentView: View {
                                 .foregroundStyle(timerManager.timerColor)
                                 .padding(.trailing, 8)
                                 .opacity((coordinator.expandingView.show && coordinator.expandingView.type == .timer && Defaults[.enableSneakPeek] && Defaults[.sneakPeekStyles] == .inline) ? 1 : 0)
-                        } else if enableLyrics && !musicManager.currentLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            ClosedMusicLyricView(text: musicManager.currentLyrics.trimmingCharacters(in: .whitespacesAndNewlines))
-                                .frame(width: max(0, effectiveCenterWidth - 16), height: notchContentHeight)
-                                .padding(.horizontal, 8)
                         } else if Defaults[.showSongMetadataInClosedNotch] && isNonNotchScreen && !musicManager.songTitle.isEmpty {
                             MarqueeText(
                                 .constant("\(musicManager.songTitle) • \(musicManager.artistName)"),
@@ -1524,7 +1512,6 @@ struct ContentView: View {
         }
         .frame(width: notchWidth, height: notchContentHeight)
         .frame(height: outerHeight, alignment: .center)
-        .padding(.top, closedMusicLyricTopInset)
         .animation(.smooth(duration: 0.25), value: secondary?.id)
     }
 
@@ -2426,7 +2413,7 @@ struct ContentView: View {
             closedNotchSize: vm.closedNotchSize,
             effectiveClosedNotchHeight: vm.effectiveClosedNotchHeight
         )
-        let height = max(closedHeight + closedMusicLyricTopInset, recordingSize?.height ?? 0) + 6
+        let height = max(closedHeight, recordingSize?.height ?? 0) + 6
             + PinnedLyricsView.reservedHeight(isEligible: pinnedLyricsVisible,
                 availability: musicManager.lyricsAvailability, context: pinnedLyricContext)
         let width = max(closedWidth, recordingSize?.width ?? 0) + 24
@@ -2457,13 +2444,21 @@ struct ContentView: View {
             && point.y >= frame.minY && point.y <= frame.maxY
     }
     
-    /// Track-level reservation. A sneak peek hides only the overlaid words.
+    /// Only the music/lyrics surface owns the extra height. Temporary HUDs
+    /// restore their original geometry instead of retaining invisible lyric rows.
     private var pinnedLyricsVisible: Bool {
-        PinnedLyricsView.shouldReserve(
+        guard !coordinator.firstLaunch,
+              !isSneakPeekVisibleOnCurrentScreen,
+              !isCurrentScreenExpansionVisible,
+              !isConnectivityHUDVisible,
+              !(capsLockManager.isCapsLockActive && Defaults[.enableCapsLockIndicator]),
+              closedMusicPairingEligible(hasActiveMusicSnapshot: hasActiveMusicSnapshotForClosedPairing)
+        else { return false }
+        return PinnedLyricsView.shouldReserve(
             lyricsEnabled: enableLyrics,
             pinEnabled: pinLyricsWhenClosed,
             surfaceEligible: vm.notchState == .closed && !vm.hideOnClosed
-                && !lockScreenManager.isLocked && musicManager.isPlaying,
+                && !lockScreenManager.isLocked && musicManager.hasActiveSession,
             availability: musicManager.lyricsAvailability
         )
     }

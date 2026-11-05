@@ -80,8 +80,15 @@ enum PinnedLyricsContextRows {
         let isCurrent: Bool
     }
 
-    static func slots(lines: [LyricLine], duration: TimeInterval, currentIndex: Int,
-                      context: PinnedLyricContext) -> [Slot] {
+    /// Resolve from the current track each time, so seeks and track changes cannot
+    /// retain a line from the future or from another song.
+    static func displayIndex(lines: [LyricLine], currentIndex: Int) -> Int {
+        guard lines.indices.contains(currentIndex), lines[currentIndex].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return currentIndex }
+        return lines.indices.prefix(through: currentIndex).last { lines[$0].isTimed && LyricTextSemantics.isLyric(lines[$0].text) } ?? currentIndex
+    }
+
+    static func slots(lines: [LyricLine], duration: TimeInterval, currentIndex: Int, context: PinnedLyricContext) -> [Slot] {
+        let currentIndex = displayIndex(lines: lines, currentIndex: currentIndex)
         let rows = SyncedLyricsRows.rows(for: lines, duration: duration)
         // Parallel text at one timestamp belongs to one context slot. Keep the
         // first sung row in source order without guessing its language or
@@ -105,6 +112,11 @@ enum PinnedLyricsContextRows {
         let inGap = rows.contains {
             if case let .instrumental(index) = $0 { return index == currentIndex }
             return false
+        }
+        if context == .current {
+            let original = sung.first { $0.timestamp == timestamp }
+            let translation = original.flatMap { lines[$0.index].translation } ?? ""
+            return [Slot(text: current ?? (inGap ? "♪" : ""), isCurrent: true), Slot(text: translation, isCurrent: false)]
         }
         let blank = Slot(text: "", isCurrent: false)
         var slots = Array(repeating: blank, count: radius - previous.count)

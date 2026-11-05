@@ -10,7 +10,7 @@
 
 import Foundation
 
-/// Lyrics from NetEase Cloud Music, asked only after LRCLIB has come up empty.
+/// Original and translated lyrics from NetEase Cloud Music.
 ///
 /// LRCLIB is a community catalogue and most Chinese-language releases were
 /// never submitted to it, so a NetEase Cloud Music user with lyrics switched on
@@ -29,6 +29,15 @@ enum NetEaseLyrics {
         let artists: [String]
         /// Seconds. NetEase reports milliseconds; converted on parse.
         let duration: TimeInterval
+        let album: String
+
+        init(id: Int, name: String, artists: [String], duration: TimeInterval, album: String = "") {
+            self.id = id
+            self.name = name
+            self.artists = artists
+            self.duration = duration
+            self.album = album
+        }
     }
 
     /// How far a result's length may sit from the playing track's before it is
@@ -39,12 +48,7 @@ enum NetEaseLyrics {
     /// Returns lyrics or an explicit instrumental/unavailable result for the
     /// closest matching track. Throws only on transport
     /// failure, so the caller can tell "nothing there" from "could not ask".
-    static func fetch(
-        title: String,
-        artist: String,
-        duration: TimeInterval,
-        session: URLSession = .shared
-    ) async throws -> LyricsResolution {
+    static func fetch(title: String, artist: String, duration: TimeInterval, album: String = "", session: URLSession = .shared) async throws -> LyricsResolution {
         guard let searchURL = searchURL(title: title, artist: artist) else { return LyricsResolution() }
 
         let (searchData, searchResponse) = try await session.data(from: searchURL)
@@ -55,7 +59,7 @@ enum NetEaseLyrics {
         }
 
         let songs = parseSearchResponse(searchData)
-        guard let song = bestMatch(in: songs, title: title, artist: artist, duration: duration),
+        guard let song = bestMatch(in: songs, title: title, artist: artist, duration: duration, album: album),
               let lyricURL = lyricURL(songID: song.id)
         else {
             Logger.log("NetEase lyrics: no match title=\(title) artist=\(artist) duration=\(duration) songs=\(songs.count)", category: .debug)
@@ -96,11 +100,8 @@ enum NetEaseLyrics {
     }
 
     static func lyricURL(songID: Int) -> URL? {
-        // `lv=-1` asks for the current line-synced lyrics; a positive value is
-        // taken as a version the client already holds and can come back with
-        // an empty body. Leaving `kv` and `tv` out keeps the karaoke and
-        // translated variants out of the response, since only the LRC is shown.
-        URL(string: "https://music.163.com/api/song/lyric?id=\(songID)&lv=-1")
+        // Request original and translated LRC together; romanization is not a translation.
+        URL(string: "https://music.163.com/api/song/lyric?id=\(songID)&lv=-1&tv=-1")
     }
 
     // MARK: - Responses
@@ -115,7 +116,7 @@ enum NetEaseLyrics {
             guard let id = song["id"] as? Int, let name = song["name"] as? String else { return nil }
             let artists = (song["artists"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
             let milliseconds = (song["duration"] as? Double) ?? 0
-            return Song(id: id, name: name, artists: artists, duration: milliseconds / 1000)
+            return Song(id: id, name: name, artists: artists, duration: milliseconds / 1000, album: (song["album"] as? [String: Any])?["name"] as? String ?? "")
         }
     }
 
@@ -125,7 +126,17 @@ enum NetEaseLyrics {
            json["nolyric"] as? Bool == true {
             return LyricsResolution(instrumental: true)
         }
-        return LyricsResolution(lines: parseLyricResponse(data).map(LRCParser.parse) ?? [])
+        let original = parseLyricResponse(data).map(LRCParser.parse) ?? []
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let translatedBody = (json?["tlyric"] as? [String: Any])?["lyric"] as? String ?? ""
+        let translated = Dictionary(grouping: LRCParser.parse(translatedBody), by: { $0.timestamp })
+        let lines = original.map { line in
+            let translation = translated[line.timestamp]?.first { candidate in
+                LyricTextSemantics.isLyric(candidate.text) && candidate.text != line.text
+            }?.text
+            return LyricLine(timestamp: line.timestamp, text: line.text, isTimed: line.isTimed, translation: LyricTextSemantics.isLyric(line.text) ? translation : nil)
+        }
+        return LyricsResolution(lines: lines)
     }
 
     /// The LRC body, or nil when NetEase says there is none. The text is
@@ -152,15 +163,15 @@ enum NetEaseLyrics {
     /// Filter first, then rank, for the same reason `LyricsSearchResults`
     /// does: search returns its closest guess even when that guess is another
     /// song, so the winner has to be a candidate before it can be the best one.
-    static func bestMatch(in songs: [Song], title: String, artist: String, duration: TimeInterval) -> Song? {
+    static func bestMatch(in songs: [Song], title: String, artist: String, duration: TimeInterval, album: String = "") -> Song? {
         let title = LyricsSearchResults.normalizedForMatching(title)
         let artist = LyricsSearchResults.normalizedForMatching(artist)
 
         return songs
             .filter { agrees($0, title: title, artist: artist, duration: duration) }
             .max { lhs, rhs in
-                let lhsScore = score(for: lhs, title: title, artist: artist)
-                let rhsScore = score(for: rhs, title: title, artist: artist)
+                let lhsScore = score(for: lhs, title: title, artist: artist, album: album)
+                let rhsScore = score(for: rhs, title: title, artist: artist, album: album)
                 if lhsScore != rhsScore { return lhsScore < rhsScore }
                 // Equal on words: the one closer in length is the likelier
                 // pressing of the same recording.
@@ -186,11 +197,13 @@ enum NetEaseLyrics {
         return distance(song.duration, from: duration) <= durationTolerance
     }
 
-    static func score(for song: Song, title: String, artist: String) -> Int {
+    static func score(for song: Song, title: String, artist: String, album: String = "") -> Int {
         let songTitle = LyricsSearchResults.normalizedForMatching(song.name)
         let songArtists = song.artists.map(LyricsSearchResults.normalizedForMatching)
 
         var score = 0
+        let albumKey = LyricsSearchResults.normalizedForMatching(album)
+        if !albumKey.isEmpty && LyricsSearchResults.normalizedForMatching(song.album) == albumKey { score += 8 }
 
         if songTitle == title { score += 8 }
         else if overlaps(songTitle, title) { score += 4 }

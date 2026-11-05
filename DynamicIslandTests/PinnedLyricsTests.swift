@@ -37,8 +37,27 @@ final class PinnedLyricsContextTests: XCTestCase {
         PinnedLyricsContextRows.slots(lines: lines, duration: 100, currentIndex: index, context: context)
     }
 
+    func testCurrentShowsExplicitTranslationWithoutChangingContextModes() {
+        let lines = [LyricLine(timestamp: 1, text: "Hello", translation: "你好"), LyricLine(timestamp: 3, text: "Next")]
+        XCTAssertEqual(PinnedLyricsContextRows.slots(lines: lines, duration: 10, currentIndex: 0, context: .current).map(\.text), ["Hello", "你好"])
+        XCTAssertEqual(PinnedLyricsContextRows.slots(lines: lines, duration: 10, currentIndex: 1, context: .current).map(\.text), ["Next", ""])
+        XCTAssertEqual(PinnedLyricsContextRows.slots(lines: lines, duration: 10, currentIndex: -1, context: .current).map(\.text), ["", ""])
+        XCTAssertEqual(PinnedLyricsContextRows.slots(lines: lines, duration: 10, currentIndex: 0, context: .three).map(\.text), ["", "Hello", "Next"])
+    }
+
+    func testBlankGapRetainsPreviousOriginalAndTranslation() {
+        let lines = [LyricLine(timestamp: 1, text: "Hello", translation: "你好"), LyricLine(timestamp: 3, text: ""), LyricLine(timestamp: 4, text: "  "), LyricLine(timestamp: 8, text: "Next")]
+        for index in [1, 2] {
+            XCTAssertEqual(PinnedLyricsContextRows.displayIndex(lines: lines, currentIndex: index), 0)
+            XCTAssertEqual(PinnedLyricsContextRows.slots(lines: lines, duration: 10, currentIndex: index, context: .current).map(\.text), ["Hello", "你好"])
+        }
+        XCTAssertEqual(PinnedLyricsContextRows.slots(lines: lines, duration: 10, currentIndex: 3, context: .current).map(\.text), ["Next", ""])
+        XCTAssertEqual(PinnedLyricsContextRows.slots(lines: lines, duration: 10, currentIndex: -1, context: .current).map(\.text), ["", ""])
+        XCTAssertEqual(PinnedLyricsContextRows.displayIndex(lines: [], currentIndex: 2), 2)
+    }
+
     func testCurrentOnly() {
-        XCTAssertEqual(slots(5, .current).map(\.text), ["Three"])
+        XCTAssertEqual(slots(5, .current).map(\.text), ["Three", ""])
     }
 
     func testThreeSemanticLinesSkipEmptyMarkers() {
@@ -50,7 +69,7 @@ final class PinnedLyricsContextTests: XCTestCase {
     }
 
     func testBreakRetainsSungNeighbors() {
-        XCTAssertEqual(slots(4, .five).map(\.text), ["One", "Two", "♪", "Three", "Four"])
+        XCTAssertEqual(slots(4, .five).map(\.text), ["", "One", "Two", "Three", "Four"])
     }
 
     func testCreditsAreNotContextOrCurrentText() {
@@ -61,7 +80,7 @@ final class PinnedLyricsContextTests: XCTestCase {
     func testBeginningAndEndKeepEmptySlots() {
         XCTAssertEqual(slots(2, .five).map(\.text), ["", "", "One", "Two", "Three"])
         XCTAssertEqual(slots(7, .five).map(\.text), ["Three", "Four", "Five", "", ""])
-        XCTAssertEqual(slots(8, .three).map(\.text), ["Five", "♪", ""])
+        XCTAssertEqual(slots(8, .three).map(\.text), ["Four", "Five", ""])
     }
 
     func testBeforeFirstTimestampKeepsCenterBlankAndFutureContext() {
@@ -72,7 +91,7 @@ final class PinnedLyricsContextTests: XCTestCase {
         for context in PinnedLyricContext.allCases {
             for index in -1..<lines.count {
                 let rows = slots(index, context)
-                XCTAssertEqual(rows.count, context.rawValue)
+                XCTAssertEqual(rows.count, context.displayedRowCount)
                 XCTAssertEqual(rows.indices.filter { rows[$0].isCurrent }, [context.rawValue / 2])
             }
         }
@@ -85,7 +104,7 @@ final class PinnedLyricsContextTests: XCTestCase {
     func testShortGapDoesNotShowInstrumentalNote() {
         let short = LRCParser.parse("[00:10]One\n[00:15]\n[00:16]Two")
         let rows = PinnedLyricsContextRows.slots(lines: short, duration: 20, currentIndex: 1, context: .three)
-        XCTAssertEqual(rows.map(\.text), ["One", "", "Two"])
+        XCTAssertEqual(rows.map(\.text), ["", "One", "Two"])
     }
 
     func testLongIntroUsesExistingInstrumentalRow() {
@@ -124,7 +143,7 @@ final class PinnedLyricsContextTests: XCTestCase {
     func testParallelTextDoesNotPreferAnyLanguage() {
         let parallel = LRCParser.parse("[00:01]English first\n[00:01]中文译文\n[00:03]Next")
         XCTAssertEqual(PinnedLyricsContextRows.slots(lines: parallel, duration: 10,
-            currentIndex: 1, context: .current).map(\.text), ["English first"])
+            currentIndex: 1, context: .current).map(\.text), ["English first", ""])
     }
 
     func testCreditsAndBlanksDoNotClaimTimestampGroup() {
@@ -143,9 +162,9 @@ final class PinnedLyricsContextTests: XCTestCase {
         let availability = LyricsResolution(lines: lines).availability
         XCTAssertEqual(availability, .timed)
         for context in PinnedLyricContext.allCases {
-            let expected = PinnedLyricsView.rowHeight * CGFloat(context.rawValue) + PinnedLyricsView.gap
+            let expected = PinnedLyricsView.rowHeight * CGFloat(context.displayedRowCount) + PinnedLyricsView.gap
             for index in -1..<lines.count {
-                XCTAssertEqual(slots(index, context).count, context.rawValue)
+                XCTAssertEqual(slots(index, context).count, context.displayedRowCount)
                 XCTAssertEqual(PinnedLyricsView.reservedHeight(isEligible: true,
                     availability: availability, context: context), expected)
             }
@@ -171,19 +190,20 @@ final class PinnedLyricsContextTests: XCTestCase {
         }
     }
 
-    func testOnlyTimedLyricalTracksReserveHeight() {
-        for state in [LyricsAvailability.loading, .unavailable, .instrumental, .untimed] {
+    func testAllAvailabilityStatesReserveTheSelectedHeight() {
+        for state in [LyricsAvailability.timed, .loading, .unavailable, .instrumental, .untimed] {
             for context in PinnedLyricContext.allCases {
-                XCTAssertEqual(PinnedLyricsView.reservedHeight(isEligible: true, availability: state, context: context), 0)
+                XCTAssertEqual(PinnedLyricsView.shouldReserve(lyricsEnabled: true, pinEnabled: true, surfaceEligible: true, availability: state), true)
+                XCTAssertEqual(PinnedLyricsView.reservedHeight(isEligible: true, availability: state, context: context), PinnedLyricsView.rowHeight * CGFloat(context.displayedRowCount) + PinnedLyricsView.gap)
             }
         }
     }
 
-    func testTrackChangesRemoveReservation() {
+    func testTrackChangesKeepReservation() {
         let states: [LyricsAvailability] = [.timed, .loading, .unavailable, .timed, .instrumental]
         XCTAssertEqual(states.map {
             PinnedLyricsView.reservedHeight(isEligible: true, availability: $0, context: .three) > 0
-        }, [true, false, false, true, false])
+        }, [true, true, true, true, true])
     }
 }
 
@@ -404,7 +424,7 @@ final class LyricsRecordingIdentityTests: XCTestCase {
         XCTAssertTrue(manager.syncedLyrics.isEmpty)
     }
 
-    func testDurationOnlyAdvertisementStartDiscardsLyricsAndReservation() {
+    func testDurationOnlyAdvertisementStartDiscardsLyricsButKeepsReservation() {
         let wasEnabled = Defaults[.enableLyrics]
         Defaults[.enableLyrics] = true
         let manager = MusicManager(startsControllerSetup: false)
@@ -423,7 +443,7 @@ final class LyricsRecordingIdentityTests: XCTestCase {
         XCTAssertTrue(manager.syncedLyrics.isEmpty)
         XCTAssertEqual(manager.currentLyricIndex, -1)
         XCTAssertEqual(PinnedLyricsView.reservedHeight(isEligible: true,
-            availability: manager.lyricsAvailability, context: .three), 0)
+            availability: manager.lyricsAvailability, context: .three), PinnedLyricsView.rowHeight * 3 + PinnedLyricsView.gap)
     }
 
     func testDurationOnlyAdvertisementEndPreparesLyricsAgain() {
@@ -447,5 +467,29 @@ final class LyricsRecordingIdentityTests: XCTestCase {
         // This incomplete metadata is rejected locally without a network lookup.
         XCTAssertEqual(updates, [.unavailable])
         withExtendedLifetime(observation) {}
+    }
+}
+
+final class PinnedLyricScrollTests: XCTestCase {
+    func testPauseThenScrollAndHoldAtEnd() {
+        XCTAssertEqual(PinnedLyricScroll.offset(overflow: 100, elapsed: 0, duration: 6), 0)
+        XCTAssertEqual(PinnedLyricScroll.offset(overflow: 100, elapsed: 0.8, duration: 6), 0)
+        XCTAssertEqual(PinnedLyricScroll.offset(overflow: 100, elapsed: 3, duration: 6), -50, accuracy: 0.001)
+        XCTAssertEqual(PinnedLyricScroll.offset(overflow: 100, elapsed: 5.2, duration: 6), -100, accuracy: 0.001)
+        XCTAssertEqual(PinnedLyricScroll.offset(overflow: 100, elapsed: 20, duration: 6), -100)
+    }
+
+    func testShortLinesStayStillAndLongLinesRespectSpeedLimit() {
+        XCTAssertEqual(PinnedLyricScroll.offset(overflow: 0, elapsed: 3, duration: 6), 0)
+        XCTAssertEqual(PinnedLyricScroll.offset(overflow: 1000, elapsed: 1.8, duration: 2), -40)
+        XCTAssertEqual(PinnedLyricScroll.offset(overflow: 100, elapsed: 10, duration: 0), 0)
+        XCTAssertEqual(PinnedLyricScroll.offset(overflow: .infinity, elapsed: 3, duration: 6), 0)
+    }
+
+    func testPlaybackTimeDeterminesPauseSeekAndIndependentRows() {
+        let first = PinnedLyricScroll.offset(overflow: 100, elapsed: 3, duration: 6)
+        XCTAssertEqual(first, PinnedLyricScroll.offset(overflow: 100, elapsed: 3, duration: 6))
+        XCTAssertEqual(PinnedLyricScroll.offset(overflow: 100, elapsed: 0, duration: 6), 0)
+        XCTAssertEqual(PinnedLyricScroll.offset(overflow: 200, elapsed: 3, duration: 6), -88, accuracy: 0.001)
     }
 }

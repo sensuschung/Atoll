@@ -288,7 +288,7 @@ struct LyricsResolution {
     }
 }
 
-/// LRCLIB is asked first. A thrown request there is the same as an empty
+/// The preferred provider is asked first. A thrown request is the same as an empty
 /// catalogue: neither produced words, so the fallback still has to run.
 /// Folding both calls into one `do` meant a transport failure skipped the
 /// only provider that had the track, and the catch showed "No lyrics found".

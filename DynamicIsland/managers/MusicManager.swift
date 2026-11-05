@@ -39,11 +39,13 @@ struct LyricLine: Identifiable, Codable, Equatable {
     /// Those still belong on screen -- you can read along yourself -- but
     /// nothing may pretend to know which line is being sung.
     let isTimed: Bool
+    let translation: String?
 
-    init(timestamp: TimeInterval, text: String, isTimed: Bool = true) {
+    init(timestamp: TimeInterval, text: String, isTimed: Bool = true, translation: String? = nil) {
         self.timestamp = timestamp
         self.text = text
         self.isTimed = isTimed
+        self.translation = translation
     }
 
     /// Splits an untimed lyrics body into the lines it is written as.
@@ -62,7 +64,7 @@ struct LyricLine: Identifiable, Codable, Equatable {
     // Compares content only; `id` is regenerated per instance, so identical
     // lyrics parsed twice would otherwise never compare equal
     static func == (lhs: LyricLine, rhs: LyricLine) -> Bool {
-        lhs.timestamp == rhs.timestamp && lhs.text == rhs.text && lhs.isTimed == rhs.isTimed
+        lhs.timestamp == rhs.timestamp && lhs.text == rhs.text && lhs.isTimed == rhs.isTimed && lhs.translation == rhs.translation
     }
 }
 
@@ -852,6 +854,8 @@ class MusicManager: ObservableObject {
             newController = TidalController()
         case .cider:
             newController = CiderController()
+        case .netEaseMusic:
+            newController = NetEaseMusicController()
         }
 
         // Set up state observation for the new controller
@@ -1857,18 +1861,12 @@ class MusicManager: ObservableObject {
         lyricsFetchTask = Task { [weak self] in
             guard let self else { return }
 
-            let lyrics = await LyricsProviderFallback.resolve(
-                primary: {
-                    try await self.fetchLyricsFromAPI(
-                        artist: requestArtist,
-                        title: requestTitle,
-                        album: requestAlbum
-                    )
-                },
-                fallback: {
-                    try await self.fetchLyricsFromNetEase(artist: requestArtist, title: requestTitle)
-                }
-            )
+            // Prefer the provider that supplies original and translated lines together.
+            let lyrics = await LyricsProviderFallback.resolve(primary: {
+                try await self.fetchLyricsFromNetEase(artist: requestArtist, title: requestTitle, album: requestAlbum)
+            }, fallback: {
+                try await self.fetchLyricsFromAPI(artist: requestArtist, title: requestTitle, album: requestAlbum)
+            })
             guard !Task.isCancelled else { return }
 
             await MainActor.run {
@@ -1888,12 +1886,12 @@ class MusicManager: ObservableObject {
     }
 
     /// All media sources share this fallback and semantic result.
-    private func fetchLyricsFromNetEase(artist: String, title: String) async throws -> LyricsResolution {
+    private func fetchLyricsFromNetEase(artist: String, title: String, album: String) async throws -> LyricsResolution {
         guard !artist.isEmpty, !title.isEmpty else { return LyricsResolution() }
         // Track updates assign duration after preparing lyrics; read it only
-        // after LRCLIB has answered, as in the existing fallback.
+        // after the task has yielded to the main actor.
         let duration = await MainActor.run { self.songDuration }
-        return try await NetEaseLyrics.fetch(title: title, artist: artist, duration: duration)
+        return try await NetEaseLyrics.fetch(title: title, artist: artist, duration: duration, album: album)
     }
 
     private func fetchLyricsFromAPI(artist: String, title: String, album: String) async throws -> LyricsResolution {
@@ -2097,7 +2095,8 @@ class MusicManager: ObservableObject {
         } else {
             position = max(0, elapsedTime)
         }
-        return position + Self.lyricLeadTime
+        // Match NetEase's line boundaries without the optional karaoke lead.
+        return position + (bundleIdentifier == NetEaseMusicController.bundleIdentifier ? 0 : Self.lyricLeadTime)
     }
 
     /// How far ahead of the voice the lyrics run.
@@ -2269,6 +2268,8 @@ extension MusicManager {
             return spotifyGreen
         case .amazonMusic:
             return amazonOrange
+        case .netEaseMusic:
+            return .red
         case .tidal, .cider:
             return .accentColor
         case .nowPlaying:
@@ -2292,6 +2293,8 @@ extension MusicManager {
             return amazonOrange
         case TidalController.bundleIdentifier:
             return .accentColor
+        case NetEaseMusicController.bundleIdentifier:
+            return .red
         case CiderController.bundleIdentifier:
             return .accentColor
         default:

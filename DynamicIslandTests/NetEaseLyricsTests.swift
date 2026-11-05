@@ -150,12 +150,31 @@ final class NetEaseLyricsTests: XCTestCase {
         XCTAssertEqual(query.first { $0.name == "type" }?.value, "1")
     }
 
-    func testLyricRequestAsksForTheLRCOnly() throws {
+    func testLyricRequestAsksForOriginalAndTranslation() throws {
         let url = try XCTUnwrap(NetEaseLyrics.lyricURL(songID: 186016))
         let query = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
-        XCTAssertEqual(query.map(\.name), ["id", "lv"])
+        XCTAssertEqual(query.map(\.name), ["id", "lv", "tv"])
         XCTAssertEqual(query.first { $0.name == "id" }?.value, "186016")
         XCTAssertEqual(query.first { $0.name == "lv" }?.value, "-1")
+        XCTAssertEqual(query.first { $0.name == "tv" }?.value, "-1")
+    }
+
+    func testTranslationPairsOnlyMatchingTimestampsAndIgnoresRomanization() throws {
+        let json: [String: Any] = ["lrc": ["lyric": "[00:01]Hello\n[00:03]Next\n[00:05]Same"], "tlyric": ["lyric": "[00:01]你好\n[00:02]错位译文\n[00:05]Same"], "romalrc": ["lyric": "[00:03]Romanization"]]
+        let result = NetEaseLyrics.parseResolution(try JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(result.lines.map(\.text), ["Hello", "Next", "Same"])
+        XCTAssertEqual(result.lines.map(\.translation), ["你好", nil, nil])
+        XCTAssertEqual(result.lines.map(\.timestamp), [1, 3, 5])
+    }
+
+    func testAlbumDisambiguatesEqualDurationYueguangRecordings() {
+        let compilation = Song(id: 419827614, name: "月光", artists: ["胡彦斌"], duration: 272.026, album: "靓声天王")
+        let original = Song(id: 92952, name: "月光", artists: ["胡彦斌"], duration: 272.026, album: "音乐斌潮")
+        for candidates in [[compilation, original], [original, compilation]] {
+            XCTAssertEqual(NetEaseLyrics.bestMatch(in: candidates, title: "月光", artist: "胡彦斌", duration: 272.02, album: "音乐斌潮")?.id, 92952)
+            XCTAssertEqual(NetEaseLyrics.bestMatch(in: candidates, title: "月光", artist: "胡彦斌", duration: 272.02, album: "靓声天王")?.id, 419827614)
+        }
+        XCTAssertNil(NetEaseLyrics.bestMatch(in: [original], title: "月光", artist: "胡彦斌", duration: 279.24, album: "音乐斌潮"))
     }
 
     func testEmptyQueryBuildsNoRequest() {

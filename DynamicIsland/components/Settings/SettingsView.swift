@@ -3125,6 +3125,8 @@ private extension MediaControllerType {
             return [TidalController.bundleIdentifier]
         case .cider:
             return ["sh.cider.genten.mac"]
+        case .netEaseMusic:
+            return [NetEaseMusicController.bundleIdentifier]
         }
     }
 
@@ -3137,6 +3139,7 @@ private extension MediaControllerType {
         case .amazonMusic: return "music.note.list"
         case .tidal: return "waveform.path"
         case .cider: return "cup.and.saucer.fill"
+        case .netEaseMusic: return "music.note"
         }
     }
 
@@ -3149,11 +3152,13 @@ private extension MediaControllerType {
         case .amazonMusic: return .cyan
         case .tidal: return .primary
         case .cider: return .orange
+        case .netEaseMusic: return .red
         }
     }
 }
 
 struct Media: View {
+    @ObservedObject private var netEaseAccessibilityPermission = AccessibilityPermissionStore.shared
     @Default(.waitInterval) var waitInterval
     @Default(.mediaController) var mediaController
     @ObservedObject var coordinator = DynamicIslandViewCoordinator.shared
@@ -3176,8 +3181,6 @@ struct Media: View {
     @Default(.showCalendar) private var showCalendar
     @Default(.enableLyrics) private var enableLyrics
     @Default(.pinLyricsWhenClosed) private var pinLyricsWhenClosed
-    @Default(.closedLyricScrollSpeed) private var closedLyricScrollSpeed
-    @Default(.closedLyricPauseDuration) private var closedLyricPauseDuration
     @Default(.pinnedLyricContext) private var pinnedLyricContext
     @Default(.lyricHighlightStyle) private var lyricHighlightStyle
     @Default(.lyricsPanelWidth) private var lyricsPanelWidth
@@ -3241,13 +3244,28 @@ struct Media: View {
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(String(localized: "'Now Playing' was the only option on previous versions and works with all media apps."))
-                        if mediaController == .amazonMusic || mediaController == .tidal || mediaController == .cider {
+                        if mediaController == .amazonMusic || mediaController == .tidal || mediaController == .cider || mediaController == .netEaseMusic {
                             Text(mediaController.description)
                         }
                     }
                     .foregroundStyle(.secondary)
                     .font(.caption)
                 }
+            }
+
+            if mediaController == .netEaseMusic {
+                Section("网易云菜单控制") {
+                    Text("有限同步：随机、循环高亮和菜单勾选仅表示 Atoll 最近设置的模式。在网易云内手动切换不会同步；重启 Atoll 或切换媒体来源后，请重新选择模式。关闭随机会恢复上次在 Atoll 设置的非随机模式，默认顺序播放。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if !netEaseAccessibilityPermission.isAuthorized {
+                        SettingsPermissionCallout(message: "收藏、随机和循环需要当前版本 Atoll 的辅助功能权限。更新测试版后若失效，请在系统设置中重新授权。", requestAction: { netEaseAccessibilityPermission.requestAuthorizationPrompt() }, openSettingsAction: { netEaseAccessibilityPermission.openSystemSettings() })
+                    } else {
+                        Label("辅助功能权限已授予", systemImage: "checkmark.circle")
+                    }
+                }
+                .onAppear { netEaseAccessibilityPermission.refreshStatus() }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in netEaseAccessibilityPermission.refreshStatus() }
             }
 
             if mediaController == .spotify {
@@ -3382,23 +3400,6 @@ struct Media: View {
                 .settingsHighlight(id: highlightID("Show lyrics"))
 
                 if enableLyrics && !enableMinimalisticUI && showStandardMediaControls {
-                    Slider(value: $closedLyricScrollSpeed, in: 10...100, step: 5) {
-                        HStack {
-                            Text("Closed lyrics scroll speed")
-                            Spacer()
-                            Text("\(Int(closedLyricScrollSpeed)) pt/s")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Slider(value: $closedLyricPauseDuration, in: 0...5, step: 0.5) {
-                        HStack {
-                            Text("Closed lyrics end pause")
-                            Spacer()
-                            Text("\(closedLyricPauseDuration, specifier: "%.1f") s")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
                     // Caption inside the row rather than after it: a Form gives
                     // every top-level view its own row and a divider, so the
                     // explanation was being ruled off from the control it
@@ -3434,7 +3435,7 @@ struct Media: View {
                     .settingsHighlight(id: highlightID("Pinned lyric context"))
 
 
-                    Text("Shows timed lyrics below the closed notch with the selected context. Keeps the space during instrumental breaks; hides the words while a HUD is on screen. Can also be toggled from the pin on the lyrics panel.")
+                    Text("Shows timed lyrics below the closed notch with the selected context. Current-line mode shows the original and its translation on two rows; missing translations leave the second row blank. Keeps the space while a song is playing or paused, including when lyrics are loading or unavailable; temporarily removes the lyric area while a HUD is on screen so the HUD keeps its original height. Can also be toggled from the pin on the lyrics panel.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

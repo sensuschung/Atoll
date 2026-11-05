@@ -53,6 +53,8 @@ class FilteredNowPlayingController: ObservableObject, MediaControllerProtocol {
     private let controllerName: String
 
     /// True only after a stream line explicitly identified the selected app as the now playing source.
+    var canControlTargetSession: Bool { targetSessionActive && !competingSessionActive && isActive() }
+
     private var targetSessionActive = false
     /// Diff lines omit the source. Remember when they belong to another app so
     /// they cannot overwrite a preserved target snapshot.
@@ -178,6 +180,13 @@ class FilteredNowPlayingController: ObservableObject, MediaControllerProtocol {
         playbackState.repeatMode = mode
     }
 
+    /// Override only mode fields when a player needs a local command history.
+    @MainActor func applyingLocalPlaybackMode(to state: PlaybackState) -> PlaybackState { state }
+
+    @MainActor func refreshLocalPlaybackMode() {
+        playbackState = applyingLocalPlaybackMode(to: playbackState)
+    }
+
     func toggleRepeat() async {
         let newRepeatMode = (playbackState.repeatMode == .off) ? 3 : (playbackState.repeatMode.rawValue - 1)
         playbackState.repeatMode = RepeatMode(rawValue: newRepeatMode) ?? .off
@@ -198,7 +207,7 @@ class FilteredNowPlayingController: ObservableObject, MediaControllerProtocol {
         }
 
         process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-        process.arguments = [scriptURL.path, frameworkPath, "stream"]
+        process.arguments = [scriptURL.path, frameworkPath, "stream", "--micros"]
 
         let pipeHandler = JSONLinesPipeHandler()
         process.standardOutput = await pipeHandler.getPipe()
@@ -313,8 +322,7 @@ class FilteredNowPlayingController: ObservableObject, MediaControllerProtocol {
         newPlaybackState.title = payload.title ?? (diff ? self.playbackState.title : "")
         newPlaybackState.artist = payload.artist ?? (diff ? self.playbackState.artist : "")
         newPlaybackState.album = payload.album ?? (diff ? self.playbackState.album : "")
-        newPlaybackState.duration = payload.duration ?? (diff ? self.playbackState.duration : 0)
-        newPlaybackState.currentTime = payload.elapsedTime ?? (diff ? self.playbackState.currentTime : 0)
+        newPlaybackState.duration = payload.resolvedDuration ?? (diff ? self.playbackState.duration : 0)
 
         if let shuffleMode = payload.shuffleMode {
             newPlaybackState.isShuffled = shuffleMode != 1
@@ -339,20 +347,14 @@ class FilteredNowPlayingController: ObservableObject, MediaControllerProtocol {
             newPlaybackState.artwork = nil
         }
 
-        if let dateString = payload.timestamp,
-           let date = ISO8601DateFormatter().date(from: dateString) {
-            newPlaybackState.lastUpdated = date
-        } else if !diff {
-            newPlaybackState.lastUpdated = Date()
-        } else {
-            newPlaybackState.lastUpdated = self.playbackState.lastUpdated
-        }
-
         newPlaybackState.playbackRate = payload.playbackRate ?? (diff ? self.playbackState.playbackRate : 1.0)
         newPlaybackState.isPlaying = payload.playing ?? (diff ? self.playbackState.isPlaying : false)
         newPlaybackState.bundleIdentifier = targetBundleIdentifier
+        newPlaybackState = FilteredPlaybackClock.applying(payload: payload, diff: diff, previous: playbackState, state: newPlaybackState, now: Date())
 
-        self.playbackState = newPlaybackState
+        await MainActor.run {
+            self.playbackState = applyingLocalPlaybackMode(to: newPlaybackState)
+        }
     }
 }
 
