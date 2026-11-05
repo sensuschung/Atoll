@@ -23,6 +23,7 @@ struct CodexUsageProvider: UsageProvider {
         let quota = await quotaClient.fetchLimits()
         snapshot.sessionLimit = quota.session
         snapshot.weekLimit = quota.week
+        snapshot.codexResetCredits = quota.resetCredits
         return snapshot
     }
 }

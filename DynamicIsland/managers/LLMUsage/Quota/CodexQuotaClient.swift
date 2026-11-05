@@ -30,13 +30,14 @@ struct CodexQuotaClient {
         let rateLimit: RateLimit?
     }
 
-    // Never throws: any credential/network/parse failure yields (nil, nil).
-    func fetchLimits() async -> (session: UsageLimit?, week: UsageLimit?) {
+    // Reset detail failures must not hide successfully fetched quota windows.
+    func fetchLimits() async -> (session: UsageLimit?, week: UsageLimit?, resetCredits: CodexResetCredits?) {
         guard let creds = loadCredentials() else {
             Self.log.notice("no credentials: auth.json/Keychain missing or unparseable")
-            return (nil, nil)
+            return (nil, nil, nil)
         }
         var request = URLRequest(url: URL(string: "https://chatgpt.com/backend-api/wham/usage")!)
+        request.timeoutInterval = 20
         request.setValue("Bearer \(creds.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Atoll", forHTTPHeaderField: "User-Agent")
@@ -48,25 +49,36 @@ struct CodexQuotaClient {
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 let code = (response as? HTTPURLResponse)?.statusCode ?? -1
                 Self.log.error("wham/usage HTTP \(code) — \(code == 401 || code == 403 ? "auth/credential" : "request") failure")
-                return (nil, nil)
+                return (nil, nil, nil)
             }
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             let now = Date()
+            var resets: CodexResetCredits?
+            // The usage response includes a count; the dedicated GET includes expiry details.
+            if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let summary = object["rate_limit_reset_credits"] as? [String: Any], let summaryData = try? JSONSerialization.data(withJSONObject: summary) {
+                resets = try? CodexResetCredits.decode(summaryData)
+            }
+            var detailRequest = request
+            detailRequest.url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")
+            detailRequest.timeoutInterval = 15
+            if let (details, detailResponse) = try? await session.data(for: detailRequest), let detailHTTP = detailResponse as? HTTPURLResponse, (200..<300).contains(detailHTTP.statusCode), let decoded = try? CodexResetCredits.decode(details) {
+                resets = decoded
+            }
             if let decoded = try? decoder.decode(UsageResponse.self, from: data) {
                 let sessionLimit = decoded.rateLimit?.primaryWindow.map { limit(from: $0, now: now) }
                 let weekLimit = decoded.rateLimit?.secondaryWindow.map { limit(from: $0, now: now) }
-                if sessionLimit != nil || weekLimit != nil { return (sessionLimit, weekLimit) }
+                if sessionLimit != nil || weekLimit != nil { return (sessionLimit, weekLimit, resets) }
             }
             let sessionLimit = headerFallback(http, key: "x-codex-primary-used-percent")
             let weekLimit = headerFallback(http, key: "x-codex-secondary-used-percent")
             if sessionLimit == nil && weekLimit == nil {
                 Self.log.error("wham/usage 200 but no usage found — response shape may have changed (\(data.count) bytes)")
             }
-            return (sessionLimit, weekLimit)
+            return (sessionLimit, weekLimit, resets)
         } catch {
             Self.log.error("wham/usage request errored: \(error.localizedDescription, privacy: .public)")
-            return (nil, nil)
+            return (nil, nil, nil)
         }
     }
 
