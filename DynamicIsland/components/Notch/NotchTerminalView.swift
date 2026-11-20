@@ -34,18 +34,12 @@ struct TerminalNSViewRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         context.coordinator.terminalManager = terminalManager
         terminalManager.ensureTerminalView(delegate: context.coordinator)
-        if !terminalManager.isProcessRunning {
-            terminalManager.startShellProcess()
-        }
         return terminalManager.containerView
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        // Re-mount terminal if it was restarted (generation bumped).
+        // Re-mount terminal if the previous view was removed on restart.
         terminalManager.ensureTerminalView(delegate: context.coordinator)
-        if !terminalManager.isProcessRunning {
-            terminalManager.startShellProcess()
-        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -69,11 +63,7 @@ struct TerminalNSViewRepresentable: NSViewRepresentable {
             // Could be used for breadcrumbs in the future.
         }
 
-        func processTerminated(source: TerminalView, exitCode: Int32?) {
-            Task { @MainActor in
-                terminalManager?.processDidTerminate(exitCode: exitCode)
-            }
-        }
+        func processTerminated(source: TerminalView, exitCode: Int32?) {}
     }
 }
 
@@ -154,21 +144,25 @@ struct NotchTerminalView: View {
                 Divider()
                     .padding(.horizontal, notchTerminalContentEdgePadding.horizontal)
 
-                // Terminal content — the containerView is stable across
-                // notch close/open cycles; updateNSView handles restart.
-                TerminalNSViewRepresentable(terminalManager: terminalManager)
-                    .clipShape(terminalClipShape)
-                    .padding(
-                        EdgeInsets(
-                            top: notchTerminalContentEdgePadding.top,
-                            leading: notchTerminalContentEdgePadding.horizontal,
-                            bottom: notchTerminalContentEdgePadding.bottom,
-                            trailing: notchTerminalContentEdgePadding.horizontal
-                        )
-                    )
-                    .onHover { hovering in
-                        updateSuppression(for: hovering)
-                    }
+                HStack(spacing: 8) {
+                    TerminalNSViewRepresentable(terminalManager: terminalManager)
+                        .clipShape(terminalClipShape)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    Rectangle()
+                        .fill(.white.opacity(0.18))
+                        .frame(width: 1)
+                        .accessibilityHidden(true)
+
+                    TerminalShortcutsPanel(terminalManager: terminalManager)
+                        .frame(width: 132)
+                }
+                .padding(.top, notchTerminalContentEdgePadding.top)
+                .padding(.bottom, notchTerminalContentEdgePadding.bottom)
+                .padding(.horizontal, notchTerminalContentEdgePadding.horizontal)
+                .onHover { hovering in
+                    updateSuppression(for: hovering)
+                }
             } else {
                 // Feature disabled placeholder
                 VStack(spacing: 8) {
@@ -200,5 +194,88 @@ struct NotchTerminalView: View {
         guard hovering != isSuppressing else { return }
         isSuppressing = hovering
         vm.setScrollGestureSuppression(hovering, token: suppressionToken)
+    }
+}
+
+private struct TerminalShortcutsPanel: View {
+    let terminalManager: TerminalManager
+    @Default(.terminalShortcuts) private var shortcuts
+    @State private var isReady = false
+
+    private var status: String {
+        isReady ? String(localized: "Terminal ready") : String(localized: "Terminal busy or unavailable")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text("Terminal shortcuts")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                Spacer(minLength: 0)
+                Circle()
+                    .fill(isReady ? Color.green : Color.red)
+                    .frame(width: 7, height: 7)
+                    .accessibilityLabel(Text(status))
+                    .help(status)
+            }
+
+            if shortcuts.isEmpty {
+                Text("Add shortcuts in Terminal settings.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.68))
+            } else {
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(shortcuts) { shortcut in
+                            Button {
+                                terminalManager.runShortcut(shortcut)
+                                isReady = terminalManager.canRunShortcut
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(shortcut.name)
+                                        .font(.caption.weight(.medium))
+                                    Text(shortcut.command)
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundStyle(.white.opacity(0.72))
+                                }
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(TerminalShortcutButtonStyle())
+                            .disabled(!isReady || !shortcut.isValid)
+                            .help(shortcut.command)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(6)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .task {
+            while !Task.isCancelled {
+                isReady = terminalManager.canRunShortcut
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+        }
+    }
+}
+
+private struct TerminalShortcutButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let opacity = isEnabled ? (configuration.isPressed ? 0.25 : 0.14) : 0.08
+        let shape = RoundedRectangle(cornerRadius: 6)
+        configuration.label
+            .foregroundStyle(.white)
+            .opacity(isEnabled ? 1 : 0.58)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(.white.opacity(opacity), in: shape)
+            .overlay {
+                shape.strokeBorder(.white.opacity(isEnabled ? 0.22 : 0.12))
+            }
+            .contentShape(shape)
     }
 }

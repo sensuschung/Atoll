@@ -125,7 +125,7 @@ struct InlineHUD: View {
         let leadingWidth: CGFloat = minimalistic ? 36 : 44
         let trailingWidth: CGFloat = minimalistic ? 136 : 180
         let centerWidth = max(closedNotchWidth - 20, 0)
-        return leadingWidth + gestureProgress / 2 + centerWidth + trailingWidth + gestureProgress / 2
+        return 2 * max(leadingWidth, trailingWidth) + gestureProgress + centerWidth + 16
     }
     
     var body: some View {
@@ -325,6 +325,7 @@ struct InlineHUD: View {
                 }
             }
             .frame(width: infoWidth, height: vm.notchSize.height - (hoverAnimation ? 0 : 12), alignment: .leading)
+            .frame(width: type == .bluetoothAudio ? max(infoWidth, trailingWidth) : infoWidth, alignment: .trailing)
             
             Rectangle()
                 .fill(.black)
@@ -452,6 +453,7 @@ struct InlineHUD: View {
             }
             .padding(.trailing, trailingWidth > 0 ? 4 : 0)
             .frame(width: trailingWidth, height: vm.closedNotchSize.height - (hoverAnimation ? 0 : 12), alignment: .center)
+            .frame(width: type == .bluetoothAudio ? max(infoWidth, trailingWidth) : trailingWidth, alignment: .leading)
         }
         .frame(height: vm.closedNotchSize.height + (hoverAnimation ? 8 : 0), alignment: .center)
         .onAppear {

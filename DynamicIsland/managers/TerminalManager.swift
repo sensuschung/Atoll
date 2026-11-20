@@ -18,6 +18,7 @@
  */
 
 import AppKit
+import Darwin
 import Foundation
 import SwiftUI
 import SwiftTerm
@@ -118,6 +119,67 @@ final class StableTerminalContainerView: NSView {
 /// the terminal underneath.
 final class TerminalScrollKnobView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Keeps shortcuts from being appended to a command the user is editing.
+private final class ShortcutTerminalView: LocalProcessTerminalView {
+    private var hasPendingInput = false
+    private var nextShortcutCheck = ContinuousClock.now
+
+    var acceptsShortcut: Bool {
+        guard !hasPendingInput, ContinuousClock.now >= nextShortcutCheck, shellAcceptsInput else { return false }
+
+        // Also cover child processes that don't take over the foreground group.
+        var child: pid_t = 0
+        return proc_listchildpids(process.shellPid, &child, Int32(MemoryLayout<pid_t>.size)) == 0
+    }
+
+    private var shellAcceptsInput: Bool {
+        guard process.running, process.childfd >= 0, process.shellPid > 0,
+              !getTerminal().isCurrentBufferAlternate,
+              tcgetpgrp(process.childfd) == process.shellPid else { return false }
+
+        // Interactive line editors use noncanonical input without tty echo.
+        // A shell starting up or waiting in a regular `read` uses cooked input.
+        var attributes = termios()
+        return tcgetattr(process.childfd, &attributes) == 0
+            && attributes.c_lflag & tcflag_t(ICANON | ECHO) == 0
+    }
+
+    override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if hasPendingInput || shellAcceptsInput {
+            switch data.last {
+            case 0x03, 0x0A, 0x0D:
+                hasPendingInput = false
+                waitForInputToSettle()
+            case nil:
+                break
+            default:
+                hasPendingInput = true
+            }
+        }
+        super.send(source: source, data: data)
+    }
+
+    func runShortcut(_ command: String) -> Bool {
+        guard acceptsShortcut else { return false }
+        waitForInputToSettle()
+        let input = getTerminal().bracketedPasteMode ? "\u{1B}[200~" + command + "\u{1B}[201~" : command
+        process.send(data: Array((input + "\r").utf8)[...])
+        return true
+    }
+
+    private func waitForInputToSettle() {
+        // Give the shell time to consume queued input and hand off the tty.
+        nextShortcutCheck = ContinuousClock.now.advanced(by: .milliseconds(350))
+    }
+
+    override func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
+        super.processTerminated(source, exitCode: exitCode)
+        Task { @MainActor in
+            TerminalManager.shared.processDidTerminate(source: self)
+        }
+    }
 }
 
 // MARK: - Terminal Manager
@@ -225,7 +287,7 @@ class TerminalManager: ObservableObject {
         // Replace only the terminal view - keep the blur underlay between restarts.
         terminalView?.removeFromSuperview()
 
-        let view = LocalProcessTerminalView(frame: initialFrame)
+        let view = ShortcutTerminalView(frame: initialFrame)
         view.autoresizingMask = [.width, .height]
 
         // Apply all settings from Defaults
@@ -274,6 +336,8 @@ class TerminalManager: ObservableObject {
             view.frame = terminalFrame
         }
 
+        startShellProcess()
+
         // Apply translucency immediately and again on the next run loop tick.
         // The deferred pass handles AppKit/SwiftUI mount timing where layer
         // changes can otherwise be lost on first open.
@@ -285,7 +349,7 @@ class TerminalManager: ObservableObject {
     }
 
     /// Starts the shell process if not already running.
-    func startShellProcess() {
+    private func startShellProcess() {
         guard let view = terminalView, !isProcessRunning else { return }
 
         let shell = Defaults[.terminalShellPath]
@@ -297,12 +361,25 @@ class TerminalManager: ObservableObject {
             environment: buildEnvironment(),
             execName: execName
         )
-        isProcessRunning = true
+        isProcessRunning = view.process.running
     }
 
     /// Called when the shell process terminates.
-    func processDidTerminate(exitCode: Int32?) {
+    fileprivate func processDidTerminate(source: LocalProcessTerminalView) {
+        guard terminalView === source else { return }
         isProcessRunning = false
+    }
+
+    var canRunShortcut: Bool {
+        (terminalView as? ShortcutTerminalView)?.acceptsShortcut == true
+    }
+
+    @discardableResult
+    func runShortcut(_ shortcut: TerminalShortcut) -> Bool {
+        guard shortcut.isValid, let view = terminalView as? ShortcutTerminalView,
+              view.runShortcut(shortcut.command) else { return false }
+        focusTerminalIfPossible()
+        return true
     }
 
     /// Restarts the shell by tearing down the old terminal and creating a fresh one.

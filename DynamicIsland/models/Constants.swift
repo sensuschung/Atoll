@@ -1302,6 +1302,7 @@ extension Defaults.Keys {
     
     // MARK: Terminal Feature
     static let enableTerminalFeature = Key<Bool>("enableTerminalFeature", default: false)
+    static let terminalShortcuts = Key<[TerminalShortcut]>("terminalShortcuts", default: [])
     static let terminalShellPath = Key<String>("terminalShellPath", default: "/bin/zsh")
     static let terminalFontFamily = Key<String>("terminalFontFamily", default: "")
     static let terminalFontSize = Key<Double>("terminalFontSize", default: 12.0)

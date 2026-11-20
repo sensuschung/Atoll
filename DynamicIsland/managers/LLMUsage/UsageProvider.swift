@@ -62,6 +62,7 @@ struct UsageSnapshot: Equatable {
     var sessionLimit: UsageLimit? = nil // 5h window quota
     var weekLimit: UsageLimit? = nil // 7d window quota
     var codexResetCredits: CodexResetCredits? = nil
+    var codexAccountEmail: String? = nil
     var models: [ModelUsage] = []
     var plan: String? = nil // Subscription plan label (e.g. "Max 5x"); provided by Claude only, nil otherwise.
     var newAPIAccounts: [NewAPIAccountSnapshot] = []

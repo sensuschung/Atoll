@@ -468,6 +468,7 @@ private enum SettingsSearchIndex {
         SettingsSearchEntry(tab: .colorPicker, title: "Show All Color Formats", keywords: ["hex", "hsl", "color formats"], highlightID: SettingsTab.colorPicker.highlightID(for: "Show All Color Formats")),
 
         // Terminal
+        SettingsSearchEntry(tab: .terminal, title: "Terminal shortcuts", keywords: ["command", "shell", "shortcut", "快捷指令"], highlightID: SettingsTab.terminal.highlightID(for: "Terminal shortcuts")),
         SettingsSearchEntry(tab: .terminal, title: "Enable terminal", keywords: ["terminal", "guake", "shell"], highlightID: SettingsTab.terminal.highlightID(for: "Enable terminal")),
         SettingsSearchEntry(tab: .terminal, title: "Shell path", keywords: ["shell", "zsh", "bash", "terminal"], highlightID: SettingsTab.terminal.highlightID(for: "Shell path")),
         SettingsSearchEntry(tab: .terminal, title: "Font size", keywords: ["terminal", "font", "text size"], highlightID: SettingsTab.terminal.highlightID(for: "Font size")),
@@ -9410,6 +9411,8 @@ struct TerminalSettings: View {
             }
 
             if enableTerminalFeature {
+                TerminalShortcutsSettings(highlightID: highlightID("Terminal shortcuts"))
+
                 // MARK: Shell
                 Section {
                     HStack {

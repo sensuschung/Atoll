@@ -11,6 +11,17 @@ struct CodexQuotaClient {
         struct Tokens: Decodable {
             let accessToken: String
             let accountId: String?
+            let idToken: String?
+
+            // This label is display metadata only. The quota service validates the token.
+            var email: String? {
+                guard var payload = (idToken ?? accessToken).split(separator: ".").dropFirst().first.map(String.init) else { return nil }
+                payload = payload.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+                payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
+                guard let data = Data(base64Encoded: payload), let claims = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+                let profile = claims["https://api.openai.com/profile"] as? [String: Any]
+                return (claims["email"] as? String) ?? (profile?["email"] as? String)
+            }
         }
         let tokens: Tokens
     }
@@ -30,12 +41,17 @@ struct CodexQuotaClient {
         let rateLimit: RateLimit?
     }
 
-    // Reset detail failures must not hide successfully fetched quota windows.
-    func fetchLimits() async -> (session: UsageLimit?, week: UsageLimit?, resetCredits: CodexResetCredits?) {
+    func fetchLimits() async -> (session: UsageLimit?, week: UsageLimit?, resetCredits: CodexResetCredits?, email: String?) {
         guard let creds = loadCredentials() else {
             Self.log.notice("no credentials: auth.json/Keychain missing or unparseable")
-            return (nil, nil, nil)
+            return (nil, nil, nil, nil)
         }
+        let limits = await fetchLimits(using: creds)
+        return (limits.session, limits.week, limits.resetCredits, creds.email)
+    }
+
+    // Reset detail failures must not hide successfully fetched quota windows.
+    private func fetchLimits(using creds: AuthFile.Tokens) async -> (session: UsageLimit?, week: UsageLimit?, resetCredits: CodexResetCredits?) {
         var request = URLRequest(url: URL(string: "https://chatgpt.com/backend-api/wham/usage")!)
         request.timeoutInterval = 20
         request.setValue("Bearer \(creds.accessToken)", forHTTPHeaderField: "Authorization")
@@ -93,7 +109,7 @@ struct CodexQuotaClient {
     }
 
     // auth.json ($CODEX_HOME, ~/.codex, ~/.config/codex), then Keychain "Codex Auth" holding the same JSON payload.
-    private func loadCredentials() -> (accessToken: String, accountId: String?)? {
+    private func loadCredentials() -> AuthFile.Tokens? {
         for path in authPaths() {
             if let data = try? Data(contentsOf: path), let creds = parseAuth(data) { return creds }
         }
@@ -114,10 +130,10 @@ struct CodexQuotaClient {
         ]
     }
 
-    private func parseAuth(_ data: Data) -> (accessToken: String, accountId: String?)? {
+    private func parseAuth(_ data: Data) -> AuthFile.Tokens? {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         guard let parsed = try? decoder.decode(AuthFile.self, from: data) else { return nil }
-        return (parsed.tokens.accessToken, parsed.tokens.accountId)
+        return parsed.tokens
     }
 }

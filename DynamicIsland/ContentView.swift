@@ -53,11 +53,9 @@ struct ContentView: View {
     @ObservedObject var doNotDisturbManager = DoNotDisturbManager.shared
     @ObservedObject var lockScreenManager = LockScreenManager.shared
     @ObservedObject private var networkConnectivityManager = NetworkConnectivityManager.shared
-    @ObservedObject private var menuBarLayout = MenuBarLayout.shared
     /// Width of the closed-notch content, measured so its left edge can be
     /// compared against the frontmost app's menus. Only the *size* is read --
     /// the offset that follows does not change it, so there is no feedback.
-    @State private var closedContentWidth: CGFloat = 0
     @ObservedObject var capsLockManager = CapsLockManager.shared
     @ObservedObject var extensionLiveActivityManager = ExtensionLiveActivityManager.shared
     @ObservedObject var extensionNotchExperienceManager = ExtensionNotchExperienceManager.shared
@@ -1000,60 +998,9 @@ struct ContentView: View {
                     enqueueMusicControlWindowSync(forceRefresh: true)
                 }
             }
-            .onAppear {
-                if vm.notchState == .closed { menuBarLayout.startTracking() }
-            }
-            .onChange(of: vm.notchState) { _, state in
-                // An open notch covers the menu bar wholesale and is the user's
-                // own doing, so there is nothing to step around while it is up.
-                if state == .closed {
-                    menuBarLayout.startTracking()
-                } else {
-                    menuBarLayout.stopTracking()
-                }
-            }
             .onDisappear {
                 performViewTeardown()
             }
-    }
-
-    /// How far right the closed-notch content has to move so it stops covering
-    /// the frontmost app's menus.
-    ///
-    /// A live activity's left wing draws into the strip of menu bar beside the
-    /// notch, which is where the app's own menus live. macOS lays those out
-    /// against `NSScreen.auxiliaryTopLeftArea` and there is no way to tell it
-    /// some of that strip is spoken for -- both auxiliary areas are read-only.
-    /// So the content moves instead of the menus.
-    ///
-    /// Zero unless something is actually being covered: no live activity, an
-    /// open notch, no accessibility permission, or menus that end before the
-    /// content begins all leave the notch centred where it belongs.
-    private var closedHUDRequiresCentering: Bool {
-        guard vm.notchState == .closed else { return false }
-        if isConnectivityHUDVisible { return true }
-        guard isSneakPeekVisibleOnCurrentScreen else { return false }
-        switch coordinator.sneakPeek.type {
-        case .volume, .brightness, .backlight, .mic: return true
-        default: return false
-        }
-    }
-
-    private var menuBarClearanceOffset: CGFloat {
-        guard !closedHUDRequiresCentering,
-              vm.notchState == .closed,
-              !vm.hideOnClosed,
-              closedContentWidth > 0,
-              let menusRightEdge = menuBarLayout.appMenusRightEdge,
-              let screenFrame = getScreenFrame(currentScreenName)
-        else { return 0 }
-
-        return MenuBarLayout.clearanceOffset(
-            contentWidth: closedContentWidth,
-            screenFrame: screenFrame,
-            menusRightEdge: menusRightEdge,
-            gap: MenuBarLayout.clearanceGap
-        )
     }
 
     @ViewBuilder
@@ -1265,19 +1212,7 @@ struct ContentView: View {
                   view
                       .fixedSize()
               }
-              .background {
-                  GeometryReader { geo in
-                      Color.clear
-                          .onAppear { closedContentWidth = geo.size.width }
-                          .onChange(of: geo.size.width) { _, width in closedContentWidth = width }
-                  }
-              }
               .pinnedLyrics(isVisible: pinnedLyricsVisible)
-              // System HUDs reserve a centre lane for the physical camera housing.
-              // Keep that lane centred from the first frame, including while the
-              // measured width changes from the preceding music/lyrics surface.
-              .offset(x: menuBarClearanceOffset)
-              .animation(closedHUDRequiresCentering ? nil : .smooth(duration: 0.25), value: menuBarClearanceOffset)
               .zIndex(2)
               
               ZStack {
@@ -2137,7 +2072,7 @@ struct ContentView: View {
          // from the menus, activating at the old centre would arm the notch where
          // nothing is drawn and refuse the pointer where it is.
         let activationRect = CGRect(
-            x: screen.frame.midX - activationWidth / 2 + menuBarClearanceOffset,
+            x: screen.frame.midX - activationWidth / 2,
             y: screen.frame.maxY - activationHeight,
             width: activationWidth,
             height: activationHeight
@@ -2149,7 +2084,6 @@ struct ContentView: View {
     /// Cancels every long-lived task / event monitor this view owns. Called from
     /// `.onDisappear` and from `vm.onViewTeardown` on window close. Idempotent.
     private func performViewTeardown() {
-        menuBarLayout.stopTracking()
         hoverTask?.cancel()
         stopHoverClickMonitor()
         removeStickyTerminalClickMonitor()
@@ -2418,7 +2352,7 @@ struct ContentView: View {
                 availability: musicManager.lyricsAvailability, context: pinnedLyricContext)
         let width = max(closedWidth, recordingSize?.width ?? 0) + 24
         // Same shift the content is drawn with, so the hit area stays under it.
-        let minX = screen.frame.midX - width / 2 + menuBarClearanceOffset
+        let minX = screen.frame.midX - width / 2
         let minY = screen.frame.maxY - height
 
         return location.x >= minX && location.x <= minX + width
