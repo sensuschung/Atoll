@@ -53,11 +53,9 @@ struct ContentView: View {
     @ObservedObject var doNotDisturbManager = DoNotDisturbManager.shared
     @ObservedObject var lockScreenManager = LockScreenManager.shared
     @ObservedObject private var networkConnectivityManager = NetworkConnectivityManager.shared
-    @ObservedObject private var menuBarLayout = MenuBarLayout.shared
     /// Width of the closed-notch content, measured so its left edge can be
     /// compared against the frontmost app's menus. Only the *size* is read --
     /// the offset that follows does not change it, so there is no feedback.
-    @State private var closedContentWidth: CGFloat = 0
     @ObservedObject var capsLockManager = CapsLockManager.shared
     @ObservedObject var extensionLiveActivityManager = ExtensionLiveActivityManager.shared
     @ObservedObject var extensionNotchExperienceManager = ExtensionNotchExperienceManager.shared
@@ -516,9 +514,9 @@ struct ContentView: View {
     private var hasActiveMusicSnapshotForClosedPairing: Bool {
         if musicManager.isPlaying { return true }
 
-        let hasMusicMetadata = !musicManager.songTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !musicManager.artistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return !musicManager.isPlayerIdle && hasMusicMetadata
+        // Keep the paused music row while its lyrics are pinned, including
+        // after the usual idle timeout. Placeholder metadata is not a session.
+        return musicManager.hasActiveSession && (!musicManager.isPlayerIdle || (enableLyrics && pinLyricsWhenClosed))
     }
 
     private var recordingLiveActivityVisibleOnClosedNotch: Bool {
@@ -843,16 +841,10 @@ struct ContentView: View {
                 Button("Settings") {
                     SettingsWindowController.shared.showWindow()
                 }
-//                Button("Edit") { // Doesnt work....
-//                    let dn = DynamicNotch(content: EditPanelView())
-//                    dn.toggle()
-//                }
-//                #if DEBUG
-//                .disabled(false)
-//                #else
-//                .disabled(true)
-//                #endif
-//                .keyboardShortcut("E", modifiers: .command)
+                Divider()
+                Button("Quit") {
+                    NSApp.terminate(nil)
+                }
             }
     }
 
@@ -1006,49 +998,9 @@ struct ContentView: View {
                     enqueueMusicControlWindowSync(forceRefresh: true)
                 }
             }
-            .onAppear {
-                if vm.notchState == .closed { menuBarLayout.startTracking() }
-            }
-            .onChange(of: vm.notchState) { _, state in
-                // An open notch covers the menu bar wholesale and is the user's
-                // own doing, so there is nothing to step around while it is up.
-                if state == .closed {
-                    menuBarLayout.startTracking()
-                } else {
-                    menuBarLayout.stopTracking()
-                }
-            }
             .onDisappear {
                 performViewTeardown()
             }
-    }
-
-    /// How far right the closed-notch content has to move so it stops covering
-    /// the frontmost app's menus.
-    ///
-    /// A live activity's left wing draws into the strip of menu bar beside the
-    /// notch, which is where the app's own menus live. macOS lays those out
-    /// against `NSScreen.auxiliaryTopLeftArea` and there is no way to tell it
-    /// some of that strip is spoken for -- both auxiliary areas are read-only.
-    /// So the content moves instead of the menus.
-    ///
-    /// Zero unless something is actually being covered: no live activity, an
-    /// open notch, no accessibility permission, or menus that end before the
-    /// content begins all leave the notch centred where it belongs.
-    private var menuBarClearanceOffset: CGFloat {
-        guard vm.notchState == .closed,
-              !vm.hideOnClosed,
-              closedContentWidth > 0,
-              let menusRightEdge = menuBarLayout.appMenusRightEdge,
-              let screenFrame = getScreenFrame(currentScreenName)
-        else { return 0 }
-
-        return MenuBarLayout.clearanceOffset(
-            contentWidth: closedContentWidth,
-            screenFrame: screenFrame,
-            menusRightEdge: menusRightEdge,
-            gap: MenuBarLayout.clearanceGap
-        )
     }
 
     @ViewBuilder
@@ -1069,12 +1021,7 @@ struct ContentView: View {
                       .padding(.top, 40)
                       Spacer()
                   } else {
-                        let hasMusicMetadata = !musicManager.songTitle.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty
-                            || !musicManager.artistName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty
-                      let hasActiveMusicSnapshot: Bool = {
-                          if musicManager.isPlaying { return true }
-                          return !musicManager.isPlayerIdle && hasMusicMetadata
-                      }()
+                      let hasActiveMusicSnapshot = hasActiveMusicSnapshotForClosedPairing
                       let musicPairingEligible = closedMusicPairingEligible(hasActiveMusicSnapshot: hasActiveMusicSnapshot)
                       let musicSecondary = resolveMusicSecondaryLiveActivity(isMusicPairingEligible: musicPairingEligible)
                       let extensionSecondaryPayloadID = extensionSecondaryPayloadID(for: musicSecondary)
@@ -1265,21 +1212,7 @@ struct ContentView: View {
                   view
                       .fixedSize()
               }
-              .background {
-                  GeometryReader { geo in
-                      Color.clear
-                          .onAppear { closedContentWidth = geo.size.width }
-                          .onChange(of: geo.size.width) { _, width in closedContentWidth = width }
-                  }
-              }
-              .pinnedLyrics(isVisible: pinnedLyricsVisible,
-                  isContentHidden: isSneakPeekVisibleOnCurrentScreen || isConnectivityHUDVisible)
-              // A connectivity HUD must remain centred on the physical notch:
-              // its middle transparent lane is what keeps both wings visible.
-              // Menu-bar clearance would shift that lane underneath the camera
-              // housing and clip one of the two content areas.
-              .offset(x: isConnectivityHUDVisible ? 0 : menuBarClearanceOffset)
-              .animation(.smooth(duration: 0.25), value: menuBarClearanceOffset)
+              .pinnedLyrics(isVisible: pinnedLyricsVisible)
               .zIndex(2)
               
               ZStack {
@@ -1448,7 +1381,7 @@ struct ContentView: View {
                 .frame(width: effectiveCenterWidth, height: notchContentHeight)
                 .overlay(
                     HStack(alignment: .top) {
-                        if(coordinator.expandingView.show && coordinator.expandingView.type == .music) {
+                        if inlineSneakPeekActive && coordinator.expandingView.type == .music {
                             MusicTitleMarqueeView(
                                 text: musicManager.songTitle,
                                 isExplicit: musicManager.isCurrentTrackExplicit,
@@ -1466,7 +1399,7 @@ struct ContentView: View {
                                 .foregroundStyle(Defaults[.coloredSpectrogram] ? Color(nsColor: musicManager.avgColor) : Color.gray)
                                 .padding(.trailing, 8)
                                 .opacity((coordinator.expandingView.show && coordinator.expandingView.type == .music && Defaults[.enableSneakPeek] && Defaults[.sneakPeekStyles] == .inline) ? 1 : 0)
-                        } else if(coordinator.expandingView.show && coordinator.expandingView.type == .timer) {
+                        } else if inlineSneakPeekActive && coordinator.expandingView.type == .timer {
                             MarqueeText(
                                 .constant(timerManager.timerName),
                                 textColor: timerManager.timerColor,
@@ -2139,7 +2072,7 @@ struct ContentView: View {
          // from the menus, activating at the old centre would arm the notch where
          // nothing is drawn and refuse the pointer where it is.
         let activationRect = CGRect(
-            x: screen.frame.midX - activationWidth / 2 + menuBarClearanceOffset,
+            x: screen.frame.midX - activationWidth / 2,
             y: screen.frame.maxY - activationHeight,
             width: activationWidth,
             height: activationHeight
@@ -2151,7 +2084,6 @@ struct ContentView: View {
     /// Cancels every long-lived task / event monitor this view owns. Called from
     /// `.onDisappear` and from `vm.onViewTeardown` on window close. Idempotent.
     private func performViewTeardown() {
-        menuBarLayout.stopTracking()
         hoverTask?.cancel()
         stopHoverClickMonitor()
         removeStickyTerminalClickMonitor()
@@ -2420,7 +2352,7 @@ struct ContentView: View {
                 availability: musicManager.lyricsAvailability, context: pinnedLyricContext)
         let width = max(closedWidth, recordingSize?.width ?? 0) + 24
         // Same shift the content is drawn with, so the hit area stays under it.
-        let minX = screen.frame.midX - width / 2 + menuBarClearanceOffset
+        let minX = screen.frame.midX - width / 2
         let minY = screen.frame.maxY - height
 
         return location.x >= minX && location.x <= minX + width
@@ -2446,13 +2378,21 @@ struct ContentView: View {
             && point.y >= frame.minY && point.y <= frame.maxY
     }
     
-    /// Track-level reservation. A sneak peek hides only the overlaid words.
+    /// Only the music/lyrics surface owns the extra height. Temporary HUDs
+    /// restore their original geometry instead of retaining invisible lyric rows.
     private var pinnedLyricsVisible: Bool {
-        PinnedLyricsView.shouldReserve(
+        guard !coordinator.firstLaunch,
+              !isSneakPeekVisibleOnCurrentScreen,
+              !isCurrentScreenExpansionVisible,
+              !isConnectivityHUDVisible,
+              !(capsLockManager.isCapsLockActive && Defaults[.enableCapsLockIndicator]),
+              closedMusicPairingEligible(hasActiveMusicSnapshot: hasActiveMusicSnapshotForClosedPairing)
+        else { return false }
+        return PinnedLyricsView.shouldReserve(
             lyricsEnabled: enableLyrics,
             pinEnabled: pinLyricsWhenClosed,
             surfaceEligible: vm.notchState == .closed && !vm.hideOnClosed
-                && !lockScreenManager.isLocked && musicManager.isPlaying,
+                && !lockScreenManager.isLocked && musicManager.hasActiveSession,
             availability: musicManager.lyricsAvailability
         )
     }

@@ -21,6 +21,7 @@
  */
 
 import SwiftUI
+import Defaults
 
 struct SizePreferenceKey: PreferenceKey {
     static var defaultValue: CGSize = .zero

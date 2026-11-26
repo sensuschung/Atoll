@@ -411,9 +411,10 @@ enum PinnedLyricContext: Int, CaseIterable, Identifiable, Defaults.Serializable 
     case five = 5
 
     var id: Int { rawValue }
+    var displayedRowCount: Int { self == .current ? 2 : rawValue }
     var localizedName: String {
         switch self {
-        case .current: return String(localized: "Current")
+        case .current: return "原文 + 译文"
         case .three: return String(localized: "3 lines")
         case .five: return String(localized: "5 lines")
         }
@@ -455,6 +456,7 @@ enum MediaControllerType: String, CaseIterable, Identifiable, Defaults.Serializa
     case amazonMusic = "Amazon Music"
     case tidal = "TIDAL"
     case cider = "Cider"
+    case netEaseMusic = "NetEase Cloud Music"
     
     var id: String { self.rawValue }
     
@@ -467,6 +469,7 @@ enum MediaControllerType: String, CaseIterable, Identifiable, Defaults.Serializa
         case .amazonMusic: return String(localized: "Amazon Music")
         case .tidal: return String(localized: "TIDAL")
         case .cider: return String(localized: "Cider")
+        case .netEaseMusic: return "网易云音乐"
         }
     }
 }
@@ -1299,6 +1302,7 @@ extension Defaults.Keys {
     
     // MARK: Terminal Feature
     static let enableTerminalFeature = Key<Bool>("enableTerminalFeature", default: false)
+    static let terminalShortcuts = Key<[TerminalShortcut]>("terminalShortcuts", default: [])
     static let terminalShellPath = Key<String>("terminalShellPath", default: "/bin/zsh")
     static let terminalFontFamily = Key<String>("terminalFontFamily", default: "")
     static let terminalFontSize = Key<Double>("terminalFontSize", default: 12.0)

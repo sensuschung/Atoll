@@ -83,6 +83,8 @@ enum MediaSourceCapabilities {
             return .init(name: String(localized: "Cider"),
                          favoriting: .full, shuffle: .full, repeatMode: .full,
                          note: String(localized: "Cider's own local API, which needs the app token entered below."))
+        case .netEaseMusic:
+            return .init(name: "网易云音乐", favoriting: .full, shuffle: .full, repeatMode: .full, note: "需要 Atoll 辅助功能权限。收藏通过菜单标题确认；随机和循环仅显示本次使用中 Atoll 最近设置的模式；在网易云内手动切换不会同步。关闭随机会恢复 Atoll 上次设置的非随机模式，默认顺序播放。")
         case .amazonMusic:
             return .init(name: String(localized: "Amazon Music"),
                          favoriting: .none, shuffle: .full, repeatMode: .full,

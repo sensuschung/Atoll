@@ -170,8 +170,10 @@ struct JSONLUsageParser {
 
         var codexModel: String? = nil
         func processLine(_ line: String) {
-            guard !line.isEmpty, let rec = parseLine(line, codexModel: &codexModel) else { return }
-            processRecord(rec)
+            autoreleasepool {
+                guard !line.isEmpty, let rec = parseLine(line, codexModel: &codexModel) else { return }
+                processRecord(rec)
+            }
         }
 
         while true {

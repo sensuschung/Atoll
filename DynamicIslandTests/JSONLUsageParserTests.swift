@@ -166,3 +166,24 @@ final class JSONLUsageParserTests: XCTestCase {
         XCTAssertTrue(snapshot.models.contains { $0.model == "codex" })
     }
 }
+final class CodexResetCreditsTests: XCTestCase {
+    func testCountOnlyIsDifferentFromEmptyDetails() throws {
+        let summary = try CodexResetCredits.decode(Data(#"{"available_count":3}"#.utf8))
+        XCTAssertEqual(summary.availableCount, 3)
+        XCTAssertNil(summary.credits)
+        let empty = try CodexResetCredits.decode(Data(#"{"available_count":0,"credits":[]}"#.utf8))
+        XCTAssertEqual(empty.credits, [])
+    }
+
+    func testExpiryFilteringAndSorting() throws {
+        let json = #"{"available_count":5,"credits":[{"id":"later","reset_type":"codex_rate_limits","status":"available","expires_at":"2030-12-01T22:47:10.690545Z"},{"id":"expired","reset_type":"codex_rate_limits","status":"available","expires_at":1},{"id":"used","reset_type":"codex_rate_limits","status":"redeemed"},{"id":"soon","reset_type":"codex_rate_limits","status":"available","expires_at":"2030-11-06T23:34:56Z"},{"id":"unknown","reset_type":"codex_rate_limits","status":"available","expires_at":null}]}"#
+        let resets = try CodexResetCredits.decode(Data(json.utf8))
+        XCTAssertEqual(resets.availableCredits(at: Date(timeIntervalSince1970: 1800000000)).map(\.id), ["soon", "later", "unknown"])
+        XCTAssertEqual(resets.availableCount, 5)
+    }
+
+    func testInvalidExpiryDoesNotBecomeUnlimited() {
+        let json = #"{"available_count":1,"credits":[{"id":"bad","reset_type":"codex_rate_limits","status":"available","expires_at":"invalid"}]}"#
+        XCTAssertThrowsError(try CodexResetCredits.decode(Data(json.utf8)))
+    }
+}

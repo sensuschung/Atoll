@@ -27,6 +27,7 @@ enum AntigravityPool: String, CaseIterable {
 struct NotchLLMUsageView: View {
     @ObservedObject private var manager = LLMUsageManager.shared
     @State private var antigravityPool: AntigravityPool = .gemini
+    @State private var showsCodexAccounts = false
 
     private func isEnabled(_ provider: ProviderID) -> Bool { Defaults[provider.enabledKey] }
 
@@ -35,15 +36,196 @@ struct NotchLLMUsageView: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            ForEach(enabledProviders) { provider in
-                card(for: provider)
+        GeometryReader { geometry in
+            ScrollView(.vertical, showsIndicators: enabledProviders.count > 1) {
+                VStack(spacing: 10) {
+                    if enabledProviders.contains(.codex) {
+                        VStack(spacing: 5) {
+                            if showsCodexAccounts {
+                                codexAccountsPage
+                            } else {
+                                HStack(alignment: .top, spacing: 8) {
+                                    card(for: .codex)
+                                    codexResetCard
+                                }
+                                Button {
+                                    showsCodexAccounts = true
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "person.crop.circle")
+                                        Text(manager.selectedCodexAccount?.label ?? defaultCodexAccountLabel).lineLimit(1)
+                                        Spacer(minLength: 4)
+                                        Image(systemName: "chevron.right")
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .font(.caption)
+                                .padding(.horizontal, 10)
+                                .help("切换额度账号")
+                            }
+                        }
+                        .frame(height: geometry.size.height)
+                    }
+                    ForEach(enabledProviders.filter { $0 != .codex }) { provider in
+                        card(for: provider)
+                            .frame(height: geometry.size.height)
+                    }
+                }
+                .padding(.horizontal, 8)
             }
         }
-        .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .environment(\.colorScheme, .dark)
-        .onAppear { manager.refreshAll() }
+        .task {
+            manager.refreshAll()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(60)) } catch { break }
+                manager.refreshAll()
+            }
+        }
+    }
+
+    private var defaultCodexAccountLabel: String {
+        manager.defaultCodexAccountEmail ?? String(localized: "跟随 Codex 登录")
+    }
+
+    private var codexAccountsPage: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button {
+                    showsCodexAccounts = false
+                } label: {
+                    Label("额度", systemImage: "chevron.left")
+                }
+                .buttonStyle(.plain)
+                Spacer()
+                Text("额度账号").font(.headline)
+                Spacer()
+                Button {
+                    manager.authorizeCodexAccount()
+                } label: {
+                    Label("添加账号", systemImage: "plus")
+                }
+                .buttonStyle(.plain)
+                .disabled(manager.isAuthorizingCodex)
+            }
+            if manager.isAuthorizingCodex {
+                Text("请在浏览器中完成授权").font(.caption).foregroundStyle(.secondary)
+            }
+            if let error = manager.codexAccountError {
+                Text(error).font(.caption).foregroundStyle(.orange).lineLimit(2)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    codexAccountRow(nil, label: defaultCodexAccountLabel)
+                    ForEach(manager.codexAccounts) { account in
+                        codexAccountRow(account, label: account.label)
+                    }
+                }
+            }
+            .font(.caption)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func codexAccountRow(_ account: CodexQuotaAccount?, label: String) -> some View {
+        HStack {
+            Button {
+                manager.selectCodexAccount(account)
+                showsCodexAccounts = false
+            } label: {
+                HStack {
+                    Image(systemName: manager.selectedCodexAccount == account ? "checkmark.circle.fill" : "circle")
+                    Text(label).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if let account {
+                Menu {
+                    Button("移除账号", role: .destructive) { manager.removeCodexAccount(account) }
+                        .disabled(manager.isRefreshing)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("管理账号")
+            }
+        }
+    }
+
+    private var codexResetCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("可用重置").font(.headline)
+                Spacer()
+                Button { manager.refreshAll(force: true) } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .disabled(manager.isRefreshing)
+                .help("刷新额度和重置机会")
+            }
+            switch manager.results[.codex] ?? .loading {
+            case .loading:
+                ProgressView().controlSize(.small)
+            case .failure:
+                Text("暂时无法获取").font(.caption).foregroundStyle(.secondary)
+            case .success(let snapshot):
+                if let resets = snapshot.codexResetCredits {
+                    Text("\(resets.availableCount) 次可用").font(.caption.weight(.semibold))
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        resetCreditList(resets, now: context.date)
+                    }
+                } else {
+                    Text("未获取到重置机会信息").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func resetCreditList(_ resets: CodexResetCredits, now: Date) -> some View {
+        let credits = resets.availableCredits(at: now)
+        return ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(credits) { credit in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(credit.title ?? "额度重置").font(.caption.weight(.semibold)).lineLimit(2)
+                        if let expiry = credit.expiresAt {
+                            Text("到期：\(expiry.formatted(.dateTime.month().day().hour().minute()))")
+                                .font(.caption2).foregroundStyle(.secondary)
+                            Text("剩余 \(expiry, style: .relative)")
+                                .font(.caption2).foregroundStyle(expiry.timeIntervalSince(now) < 86400 ? .orange : .secondary)
+                        } else {
+                            Text("未提供到期时间").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if credit.isSupportedByPlan == false {
+                            Text("当前套餐不支持").font(.caption2).foregroundStyle(.orange)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(7)
+                    .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                }
+                if resets.availableCount == 0 {
+                    Text("暂无可用重置").font(.caption).foregroundStyle(.secondary)
+                } else if resets.credits == nil {
+                    Text("有效期信息未提供").font(.caption2).foregroundStyle(.secondary)
+                } else if credits.count < resets.availableCount {
+                    Text("部分重置信息待刷新").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -103,7 +285,7 @@ struct NotchLLMUsageView: View {
             if provider == .antigravity {
                 antigravitySuccess(snap)
             } else if snap.sessionLimit == nil && snap.weekLimit == nil {
-                if provider != .cursor {
+                if provider != .cursor && provider != .codex {
                     window("Today", snap.today, prominent: true)
                     window("Week", snap.week)
                     window("Session", snap.session)
@@ -116,9 +298,11 @@ struct NotchLLMUsageView: View {
                 } else {
                     if let limit = snap.sessionLimit { quotaGauge("Session", limit) }
                     if let limit = snap.weekLimit { quotaGauge("Week", limit) }
-                    VStack(alignment: .leading, spacing: 2) {
-                        window("Today", snap.today, compact: true)
-                        window("Week", snap.week, compact: true)
+                    if provider != .codex {
+                        VStack(alignment: .leading, spacing: 2) {
+                            window("Today", snap.today, compact: true)
+                            window("Week", snap.week, compact: true)
+                        }
                     }
                 }
             }

@@ -147,6 +147,8 @@ extension MediaControllerType {
             return String(localized: "Uses macOS Now Playing when the Amazon Music app is the active media source. Playback controls follow the system Now Playing target. Scrubbing the timeline may not work if the Amazon Music app does not support remote seek.")
         case .tidal:
             return String(localized: "Uses macOS Now Playing when the TIDAL app is the active media source. Playback controls follow the system Now Playing target. Scrubbing, shuffle, or repeat may not work if TIDAL does not support the corresponding remote command.")
+        case .netEaseMusic:
+            return "通过 macOS 正在播放读取网易云歌曲、封面和进度。请先在网易云中播放歌曲；仅在它是系统当前媒体来源时控制播放。进度跳转取决于客户端支持，收藏、随机和循环通过控制菜单操作，需要 Atoll 的辅助功能权限。循环按钮提供模式选择；高亮仅代表 Atoll 最近设置的模式，网易云内的手动切换不会同步。"
         case .cider:
             return String(localized: "Uses macOS Now Playing when Cider is the active media source. Playback controls follow the system Now Playing target.")
         }
